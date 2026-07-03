@@ -1,0 +1,100 @@
+{
+  "models": [
+    {
+      "name": "peaceful",
+      "app_uuid": "4ed8b559-a596-4ed3-9aa9-aac830666187",
+      "input_field": "questions",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 0,
+      "key_id": "3faacf047eaf1f1e"
+    },
+    {
+      "name": "1-2",
+      "app_uuid": "b0715418-d102-4a36-bd10-aff9a0de9882",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 1,
+      "key_id": "2eabcd25023f811a"
+    },
+    {
+      "name": "1",
+      "app_uuid": "de0cb9b1-8df4-471a-9c00-33d82f7b5fb9",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 2,
+      "key_id": "dece0bdc709a1b6d"
+    },
+    {
+      "name": "31313",
+      "app_uuid": "b8f61ef8-c9ca-410c-9f99-fd9af38a9a06",
+      "app_name": "31313",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 3,
+      "key_id": "a4ad6d0a413ad407"
+    },
+    {
+      "name": "aeather",
+      "app_uuid": "49feac0b-98af-4da1-a1d6-69dafdea5b4a",
+      "app_name": "Aeather",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 4,
+      "key_id": "01925541a8aae054"
+    },
+    {
+      "name": "23333",
+      "app_uuid": "ebf8be22-79cc-4279-8850-a7187939775c",
+      "app_name": "23333",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 5,
+      "key_id": "4199c3faa8ef4784"
+    },
+    {
+      "name": "243",
+      "app_uuid": "1d987e10-7683-4379-975c-968330ad8583",
+      "app_name": "243",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 6,
+      "key_id": "0613c761c609e311"
+    },
+    {
+      "name": "5437",
+      "app_uuid": "79e42f58-4bf4-4049-afa6-abd5199d5a54",
+      "app_name": "5437",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 7,
+      "key_id": "19809876cdbc90da"
+    },
+    {
+      "name": "55525",
+      "app_uuid": "18424b26-597c-4743-9bd4-8de117713830",
+      "app_name": "55525",
+      "input_field": "label",
+      "output_field": "",
+      "input_mode": "sillytavern",
+      "enabled": true,
+      "key_index": 8,
+      "key_id": "32bfd5170927c060"
+    }
+  ]
+}

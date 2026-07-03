@@ -1,0 +1,19 @@
+services:
+  airops-proxy:
+    build:
+      context: .
+    image: airops-proxy:local
+    env_file:
+      - .env
+    environment:
+      CONFIG_PATH: /app/data/config.json
+      DOCKER_BIND_HOST: "${DOCKER_BIND_HOST:-127.0.0.1}"
+    ports:
+      - "${DOCKER_BIND_HOST:-127.0.0.1}:${DOCKER_PORT:-8081}:8080"
+    volumes:
+      - airops-data:/app/data
+    init: true
+    restart: unless-stopped
+
+volumes:
+  airops-data:
