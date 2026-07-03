@@ -15,17 +15,12 @@ AirOps Workflow → OpenAI 兼容 API 代理
       "app_uuid": "uuid-...",      // AirOps app uuid
       "input_field": "topic",      // 单字段模式：messages 拼接后填入此字段
       "output_field": "output",    // 从 execution.output 取此字段；空则取整个 output
-      "input_mode": "sillytavern", // sillytavern=保序并保留角色名/预填; concat=兼容拼接; last_user=仅最后 user
+      "input_mode": "concat",      // concat=拼接所有消息; last_user=仅最后 user 消息
       "input_mappings": [           // 多字段模式（可选；非空时覆盖 input_field/input_mode）
         {"role": "system", "field": "system_prompt", "mode": "last"},
         {"role": "user", "field": "question", "mode": "concat"},
         {"role": "*", "field": "context", "mode": "join"}  // 兜底捕获未映射 role
       ],
-      "request_mappings": {         // 可选：把酒馆/OpenAI 生成参数送入 workflow 字段
-        "temperature": "temperature",
-        "max_tokens": "max_tokens",
-        "stop": "stop_sequences"
-      },
       "enabled": true,
       "key_index": 0,               // 兼容展示；key 换序后由 key_id 修正
       "key_id": "stable-hash"       // key 的稳定摘要，不含 key 明文
@@ -81,38 +76,6 @@ _EXECUTION_BINDINGS_LOCK = threading.Lock()
 _MAX_EXECUTION_BINDINGS = 10_000
 logger = logging.getLogger("airops-proxy")
 
-# SillyTavern 的 Custom Chat Completion 会发送这些 OpenAI/扩展采样参数。
-# AirOps workflow 只接收 inputs，因此通过 request_mappings 显式绑定到 schema 字段。
-_CHAT_OPTION_KEYS = {
-    "temperature",
-    "max_tokens",
-    "top_p",
-    "top_k",
-    "min_p",
-    "top_a",
-    "presence_penalty",
-    "frequency_penalty",
-    "repetition_penalty",
-    "stop",
-    "seed",
-    "n",
-    "logit_bias",
-}
-_CHAT_OPTION_FIELD_ALIASES = {
-    "temperature": ("temperature", "temp"),
-    "max_tokens": ("max_tokens", "max_output_tokens", "response_tokens"),
-    "top_p": ("top_p",),
-    "top_k": ("top_k",),
-    "min_p": ("min_p",),
-    "top_a": ("top_a",),
-    "presence_penalty": ("presence_penalty",),
-    "frequency_penalty": ("frequency_penalty",),
-    "repetition_penalty": ("repetition_penalty", "repeat_penalty"),
-    "stop": ("stop", "stop_sequences", "stopping_strings"),
-    "seed": ("seed",),
-    "n": ("n", "candidate_count"),
-    "logit_bias": ("logit_bias",),
-}
 
 # 解析 key 列表：AIROPS_API_KEYS（逗号分隔）优先，回退到单个 AIROPS_API_KEY
 _raw_keys = os.environ.get("AIROPS_API_KEYS", "").strip()
@@ -576,7 +539,7 @@ def _validate_config(cfg: object) -> dict:
             raise HTTPException(status_code=400, detail=f"models[{index}].enabled 必须是布尔值")
         model["enabled"] = model.get("enabled", True)
         input_mode = model.get("input_mode", "concat")
-        if input_mode not in ("last_user", "concat", "sillytavern"):
+        if input_mode not in ("last_user", "concat"):
             raise HTTPException(status_code=400, detail=f"models[{index}].input_mode 无效")
         model["input_mode"] = input_mode
         output_field = model.get("output_field", "")
@@ -602,52 +565,11 @@ def _validate_config(cfg: object) -> dict:
                     raise HTTPException(status_code=400, detail=f"models[{index}].input_mappings[{mi}].mode 无效: {mode}")
                 if role == "*":
                     wildcard_count += 1
-                if field in mapping_fields:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"models[{index}].input_mappings 字段重复: {field}",
-                    )
                 normalized_mappings.append({"role": role, "field": field, "mode": mode})
                 mapping_fields.add(field)
             if wildcard_count > 1:
                 raise HTTPException(status_code=400, detail=f"models[{index}].input_mappings 只能有一个 role='*' 兜底")
             model["input_mappings"] = normalized_mappings
-        # request_mappings 把 Chat Completion 参数显式送入 workflow inputs。
-        raw_request_mappings = model.get("request_mappings", {})
-        if not isinstance(raw_request_mappings, dict):
-            raise HTTPException(status_code=400, detail=f"models[{index}].request_mappings 必须是对象")
-        normalized_request_mappings = {}
-        request_fields = set()
-        conversation_fields = mapping_fields if has_mappings else {model["input_field"]}
-        for raw_key, raw_field in raw_request_mappings.items():
-            key_name = str(raw_key).strip().lower()
-            if key_name not in _CHAT_OPTION_KEYS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"models[{index}].request_mappings 不支持参数: {key_name}",
-                )
-            if not isinstance(raw_field, str) or not raw_field.strip():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"models[{index}].request_mappings.{key_name} 字段不能为空",
-                )
-            target_field = raw_field.strip()
-            if target_field in conversation_fields:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"models[{index}].request_mappings 字段与消息输入冲突: {target_field}",
-                )
-            if target_field in request_fields:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"models[{index}].request_mappings 字段重复: {target_field}",
-                )
-            normalized_request_mappings[key_name] = target_field
-            request_fields.add(target_field)
-        if normalized_request_mappings:
-            model["request_mappings"] = normalized_request_mappings
-        else:
-            model.pop("request_mappings", None)
         key, resolved_index, key_id = KEY_POOL.resolve(
             model.get("key_index"), model.get("key_id", "")
         )
@@ -781,25 +703,6 @@ def _guess_mappings_for_fields(fields: list[str]) -> tuple[list[dict], set[str]]
     return mappings, used
 
 
-def _guess_request_mappings(schema_fields: list[dict]) -> dict[str, str]:
-    """按精确字段别名识别 workflow 的采样参数输入，避免把它们误判成对话 role。"""
-    available = {
-        field["name"].strip().lower(): field["name"].strip()
-        for field in schema_fields
-        if isinstance(field, dict) and isinstance(field.get("name"), str) and field["name"].strip()
-    }
-    result = {}
-    used_fields = set()
-    for option, aliases in _CHAT_OPTION_FIELD_ALIASES.items():
-        for alias in aliases:
-            target = available.get(alias)
-            if target and target not in used_fields:
-                result[option] = target
-                used_fields.add(target)
-                break
-    return result
-
-
 def _extract_output(execution: dict, output_field: str) -> str:
     """从 execution.output 提取文本。output_field 为空则取整个 output 的 JSON。"""
     output = execution.get("output")
@@ -848,73 +751,6 @@ def _content_to_text(content: object) -> str:
     return ""
 
 
-def _sillytavern_content_to_text(content: object) -> str:
-    """保留文本顺序；无法作为字符串传给 AirOps 的媒体用短占位符明确标记。"""
-    if not isinstance(content, list):
-        return _content_to_text(content)
-    parts = []
-    for part in content:
-        if isinstance(part, str):
-            parts.append(part)
-            continue
-        if not isinstance(part, dict):
-            continue
-        text = part.get("text") or part.get("input_text")
-        if isinstance(text, str):
-            parts.append(text)
-            continue
-        part_type = str(part.get("type", "")).strip().lower()
-        if part_type in ("image", "image_url", "input_image"):
-            parts.append("[inline image omitted by AirOps text workflow]")
-        elif part_type in ("audio", "input_audio"):
-            parts.append("[inline audio omitted by AirOps text workflow]")
-        elif part_type in ("video", "video_url", "input_video"):
-            parts.append("[inline video omitted by AirOps text workflow]")
-        elif part_type in ("file", "input_file"):
-            parts.append("[inline file omitted by AirOps text workflow]")
-    return "\n".join(parts)
-
-
-def _safe_message_label(value: object, default: str) -> str:
-    text = str(value if value is not None else default).strip().lower() or default
-    return text if all(char.isalnum() or char in "_-" for char in text) else default
-
-
-def _messages_to_sillytavern_input(messages: list) -> str:
-    """把酒馆已经编排好的消息按原顺序串行化，不按 role 重排。
-
-    末尾 assistant 消息保持在原位，因此 Continue Prefill 不会被吞掉；群聊角色名、
-    tool_call_id 和工具调用也会保留为可读文本。媒体无法送入字符串 workflow，使用占位符。
-    """
-    parts = []
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        role = _safe_message_label(message.get("role"), "user")
-        attributes = []
-        name = message.get("name")
-        if isinstance(name, str) and name.strip():
-            attributes.append(f"name={json.dumps(name.strip(), ensure_ascii=False)}")
-        tool_call_id = message.get("tool_call_id")
-        if isinstance(tool_call_id, str) and tool_call_id.strip():
-            attributes.append(f"tool_call_id={json.dumps(tool_call_id.strip(), ensure_ascii=False)}")
-        header = f"[{role}{(' ' + ' '.join(attributes)) if attributes else ''}]"
-        body_parts = []
-        content = _sillytavern_content_to_text(message.get("content", ""))
-        if content:
-            body_parts.append(content)
-        refusal = message.get("refusal")
-        if isinstance(refusal, str) and refusal:
-            body_parts.append(f"[refusal]\n{refusal}")
-        tool_calls = message.get("tool_calls")
-        if isinstance(tool_calls, list) and tool_calls:
-            body_parts.append(
-                "[tool_calls]\n" + json.dumps(tool_calls, ensure_ascii=False, separators=(",", ":"))
-            )
-        parts.append(header + "\n" + "\n\n".join(body_parts))
-    return "\n\n".join(parts)
-
-
 def _messages_to_input(messages: list, mode: str) -> str:
     """把 OpenAI messages 拼接成 workflow 单一输入字符串。"""
     if not isinstance(messages, list):
@@ -924,8 +760,6 @@ def _messages_to_input(messages: list, mode: str) -> str:
             if isinstance(m, dict) and m.get("role") == "user":
                 return _content_to_text(m.get("content", ""))
         return ""
-    if mode == "sillytavern":
-        return _messages_to_sillytavern_input(messages)
     # concat: 全部消息按 role: content 拼接
     parts = []
     for m in messages:
@@ -935,41 +769,6 @@ def _messages_to_input(messages: list, mode: str) -> str:
         content = _content_to_text(m.get("content", ""))
         parts.append(f"[{role}]\n{content}")
     return "\n\n".join(parts)
-
-
-def _request_options_to_inputs(request_body: dict, model: dict) -> dict:
-    """根据 model.request_mappings 提取酒馆/OpenAI 生成参数。"""
-    mappings = model.get("request_mappings") if isinstance(model, dict) else None
-    if not isinstance(mappings, dict):
-        return {}
-    result = {}
-    for option, field in mappings.items():
-        if option not in _CHAT_OPTION_KEYS or not isinstance(field, str) or not field:
-            continue
-        if option == "max_tokens":
-            value = request_body.get("max_completion_tokens")
-            if value is None:
-                value = request_body.get("max_tokens")
-        else:
-            value = request_body.get(option)
-        if value is not None:
-            result[field] = value
-    return result
-
-
-def _stop_sequences(value: object) -> list[str]:
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item]
-    return []
-
-
-def _apply_stop_sequences(content: str, stop: object) -> str:
-    """AirOps 无法中止已开始的 workflow；返回前仍按最早 stop 截断以兼容客户端语义。"""
-    positions = [content.find(sequence) for sequence in _stop_sequences(stop)]
-    positions = [position for position in positions if position >= 0]
-    return content[:min(positions)] if positions else content
 
 
 def _messages_to_inputs(messages: list, model: dict) -> dict:
@@ -1368,13 +1167,8 @@ async def api_autoconfig(request: Request):
         field for field in inputs_schema
         if isinstance(field, dict) and isinstance(field.get("name"), str) and field["name"].strip()
     ]
-    request_mappings = _guess_request_mappings(schema_fields)
-    request_field_names = set(request_mappings.values())
-    conversation_fields = [field for field in schema_fields if field["name"].strip() not in request_field_names]
-    required_fields = [field for field in conversation_fields if field.get("required")]
+    required_fields = [field for field in schema_fields if field.get("required")]
     probe_log = []
-    if request_mappings:
-        probe_log.append({"step": "request_parameter_fields", "mappings": request_mappings})
 
     import re
     # 多必填字段：按字段名启发式分配 role，生成 input_mappings
@@ -1386,14 +1180,14 @@ async def api_autoconfig(request: Request):
         llm_model = _extract_llm_from_definition(app_info.get("definition", []))
         slug = re.sub(r"[^a-z0-9-]", "-", app_name.lower()).strip("-")
         slug = re.sub(r"-+", "-", slug) or "workflow"
-        result = {
+        return {
             "name": slug,
             "app_uuid": app_uuid,
             "app_name": app_name,
             "input_field": "",
             "input_mappings": mappings,
             "output_field": "",
-            "input_mode": "sillytavern",
+            "input_mode": "concat",
             "enabled": True,
             "llm_model": llm_model,
             "key_index": key_index,
@@ -1401,13 +1195,10 @@ async def api_autoconfig(request: Request):
             "probe_log": probe_log,
             "output_sample": None,
             "multi_field": True,
-            "unmapped_required": [f for f in (field["name"].strip() for field in conversation_fields if field.get("required")) if f not in used_fields],
+            "unmapped_required": [f for f in (field["name"].strip() for field in schema_fields if field.get("required")) if f not in used_fields],
         }
-        if request_mappings:
-            result["request_mappings"] = request_mappings
-        return result
 
-    selected_field = required_fields[0] if required_fields else (conversation_fields[0] if conversation_fields else None)
+    selected_field = required_fields[0] if required_fields else (schema_fields[0] if schema_fields else None)
 
     if selected_field:
         input_field = selected_field["name"].strip()
@@ -1429,13 +1220,13 @@ async def api_autoconfig(request: Request):
     slug = re.sub(r"-+", "-", slug) or "workflow"
     llm_model = _extract_llm_from_definition(app_info.get("definition", []))
 
-    result = {
+    return {
         "name": slug,
         "app_uuid": app_uuid,
         "app_name": app_name,
         "input_field": input_field,
         "output_field": output_field,
-        "input_mode": "sillytavern",
+        "input_mode": "concat",
         "enabled": True,
         "llm_model": llm_model,
         "key_index": key_index,
@@ -1443,9 +1234,6 @@ async def api_autoconfig(request: Request):
         "probe_log": probe_log,
         "output_sample": output_sample,
     }
-    if request_mappings:
-        result["request_mappings"] = request_mappings
-    return result
 
 
 @app.post("/api/test")
@@ -1521,11 +1309,6 @@ async def v1_chat_completions(request: Request):
     inputs = _messages_to_inputs(messages, model)
     if not any(v.strip() for v in inputs.values()):
         raise HTTPException(status_code=400, detail="没有读取到非空的用户输入")
-    option_inputs = _request_options_to_inputs(req, model)
-    conflicts = set(inputs).intersection(option_inputs)
-    if conflicts:
-        raise HTTPException(status_code=500, detail=f"workflow 输入字段配置冲突: {', '.join(sorted(conflicts))}")
-    inputs.update(option_inputs)
 
     try:
         ki = model.get("key_index")
@@ -1544,7 +1327,6 @@ async def v1_chat_completions(request: Request):
         raise HTTPException(status_code=502, detail=f"workflow {execution['status']}: {err}")
 
     content = _extract_output(execution, model.get("output_field", ""))
-    content = _apply_stop_sequences(content, req.get("stop"))
     cid = "chatcmpl-" + uuidlib.uuid4().hex
     created = int(time.time())
 

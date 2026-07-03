@@ -185,74 +185,6 @@ class InputTests(unittest.IsolatedAsyncioTestCase):
             "[assistant]\n第一答\n\n[user]\n追问",
         )
 
-    def test_sillytavern_preserves_order_names_prefill_and_media_markers(self):
-        messages = [
-            {"role": "system", "content": "世界书：雨夜"},
-            {"role": "assistant", "name": "Alice", "content": "第一句"},
-            {"role": "system", "content": "深度注入"},
-            {"role": "user", "name": "玩家", "content": [
-                {"type": "text", "text": "继续"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-            ]},
-            {"role": "assistant", "name": "Alice", "content": "预填："},
-        ]
-        self.assertEqual(
-            app._messages_to_input(messages, "sillytavern"),
-            "[system]\n世界书：雨夜\n\n"
-            "[assistant name=\"Alice\"]\n第一句\n\n"
-            "[system]\n深度注入\n\n"
-            "[user name=\"玩家\"]\n继续\n[inline image omitted by AirOps text workflow]\n\n"
-            "[assistant name=\"Alice\"]\n预填：",
-        )
-
-    async def test_sillytavern_request_parameters_and_stop_are_applied(self):
-        captured = {}
-        selected = {
-            "name": "tavern",
-            "app_uuid": "workflow",
-            "input_field": "prompt",
-            "output_field": "",
-            "input_mode": "sillytavern",
-            "request_mappings": {
-                "temperature": "temperature",
-                "max_tokens": "max_output_tokens",
-                "stop": "stop_sequences",
-            },
-            "enabled": True,
-            "key_index": 0,
-            "key_id": app.KEY_POOL.key_ids[0],
-        }
-
-        async def fake_execute(app_uuid, inputs, **kwargs):
-            captured.update(inputs)
-            return {"uuid": "execution"}
-
-        async def fake_poll(*args, **kwargs):
-            return {"uuid": "execution", "status": "success", "output": "回答正文<STOP>不应返回"}
-
-        transport = httpx.ASGITransport(app=app.app)
-        with patch.object(app, "_find_model", return_value=selected), patch.object(
-            app, "_do_async_execute", fake_execute
-        ), patch.object(app, "_poll_until_terminal", fake_poll):
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                response = await client.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "tavern",
-                        "messages": [{"role": "user", "name": "玩家", "content": "你好"}],
-                        "temperature": 0.7,
-                        "max_completion_tokens": 321,
-                        "stop": ["<STOP>", "玩家:"],
-                    },
-                )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["prompt"], "[user name=\"玩家\"]\n你好")
-        self.assertEqual(captured["temperature"], 0.7)
-        self.assertEqual(captured["max_output_tokens"], 321)
-        self.assertEqual(captured["stop_sequences"], ["<STOP>", "玩家:"])
-        self.assertEqual(response.json()["choices"][0]["message"]["content"], "回答正文")
-
     async def test_multi_field_chat_completions_routes_to_workflow_fields(self):
         captured = {}
         selected = {
@@ -331,28 +263,6 @@ class MultiSchemaClient:
 
     async def post(self, *args, **kwargs):
         raise AssertionError("autoconfig must not execute a workflow")
-
-
-class TavernSchemaResponse:
-    status_code = 200
-    text = ""
-
-    def json(self):
-        return {
-            "name": "Tavern App",
-            "inputs_schema": [
-                {"name": "prompt", "required": True},
-                {"name": "temperature", "required": True},
-                {"name": "max_output_tokens", "required": False},
-                {"name": "stop_sequences", "required": False},
-            ],
-            "definition": [{"type": "llm", "config": {"model": "gpt-4o"}}],
-        }
-
-
-class TavernSchemaClient(MultiSchemaClient):
-    async def get(self, *args, **kwargs):
-        return TavernSchemaResponse()
 
 
 class InputMappingsTests(unittest.TestCase):
@@ -459,40 +369,6 @@ class InputMappingsTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             app._validate_config(cfg)
 
-    def test_validate_config_rejects_duplicate_workflow_input_fields(self):
-        cfg = {"models": [{
-            "name": "m", "app_uuid": "uuid", "input_field": "",
-            "input_mappings": [
-                {"role": "system", "field": "prompt", "mode": "last"},
-                {"role": "user", "field": "prompt", "mode": "concat"},
-            ],
-            "key_index": 0, "key_id": app.KEY_POOL.key_ids[0],
-        }]}
-        with self.assertRaises(HTTPException):
-            app._validate_config(cfg)
-
-    def test_validate_config_accepts_sillytavern_and_request_mappings(self):
-        cfg = {"models": [{
-            "name": "m", "app_uuid": "uuid", "input_field": "prompt",
-            "input_mode": "sillytavern",
-            "request_mappings": {"temperature": "temperature", "stop": "stop_sequences"},
-            "key_index": 0, "key_id": app.KEY_POOL.key_ids[0],
-        }]}
-        normalized = app._validate_config(cfg)["models"][0]
-        self.assertEqual(normalized["input_mode"], "sillytavern")
-        self.assertEqual(normalized["request_mappings"]["stop"], "stop_sequences")
-
-    def test_validate_config_rejects_request_mapping_collision(self):
-        cfg = {"models": [{
-            "name": "m", "app_uuid": "uuid", "input_field": "prompt",
-            "input_mode": "sillytavern",
-            "request_mappings": {"temperature": "prompt"},
-            "key_index": 0, "key_id": app.KEY_POOL.key_ids[0],
-        }]}
-        with self.assertRaises(HTTPException):
-            app._validate_config(cfg)
-
-
 class AutoConfigMultiTests(unittest.IsolatedAsyncioTestCase):
     async def test_autoconfig_multi_required_returns_mappings(self):
         with patch.object(app.httpx, "AsyncClient", MultiSchemaClient):
@@ -510,19 +386,6 @@ class AutoConfigMultiTests(unittest.IsolatedAsyncioTestCase):
             result = await app.api_autoconfig(FakeRequest({"app_uuid": "schema-app", "key_index": 0}))
         self.assertNotIn("input_mappings", result)
         self.assertEqual(result["input_field"], "questions")
-
-    async def test_autoconfig_separates_chat_parameters_from_conversation_fields(self):
-        with patch.object(app.httpx, "AsyncClient", TavernSchemaClient):
-            result = await app.api_autoconfig(FakeRequest({"app_uuid": "tavern-app", "key_index": 0}))
-        self.assertNotIn("input_mappings", result)
-        self.assertEqual(result["input_field"], "prompt")
-        self.assertEqual(result["input_mode"], "sillytavern")
-        self.assertEqual(result["request_mappings"], {
-            "temperature": "temperature",
-            "max_tokens": "max_output_tokens",
-            "stop": "stop_sequences",
-        })
-
 
 class StaticSafetyTests(unittest.TestCase):
     def test_frontend_avoids_unsafe_html_and_persistent_token(self):
