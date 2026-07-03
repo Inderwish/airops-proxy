@@ -74,6 +74,7 @@ _CONFIG_LOCK = threading.RLock()
 _EXECUTION_BINDINGS: OrderedDict[str, str] = OrderedDict()
 _EXECUTION_BINDINGS_LOCK = threading.Lock()
 _MAX_EXECUTION_BINDINGS = 10_000
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("airops-proxy")
 
 
@@ -1305,6 +1306,9 @@ async def v1_chat_completions(request: Request):
     model = _find_model(model_name)
     if not model:
         raise HTTPException(status_code=404, detail=f"model '{model_name}' 未配置")
+
+    logger.info("route model=%s -> workflow=%s key_index=%s key_id=%s",
+                model_name, model.get("name"), model.get("key_index"), model.get("key_id", ""))
 
     inputs = _messages_to_inputs(messages, model)
     if not any(v.strip() for v in inputs.values()):
